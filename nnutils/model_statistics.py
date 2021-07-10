@@ -1,6 +1,7 @@
 """ model_statistics.py """
 from .layer_info import *
 from .formatting import FormattingOptions, Verbosity
+import warnings
 
 HEADER_TITLES = {
     "kernel_size": "Kernel Shape",
@@ -64,7 +65,24 @@ class ModelStatistics:
         def get_start_comma(depth: int) -> str:
             return "" if depth == 1 else "," * (depth - 1)
 
+        # add column to the table
+        coming = ['', '']
+        if len(layer_info.coming_list)>2:
+            warnings.warn("layer {} has more that 2 input connections".format(str(self)))
+        going = ['', '']
+        if len(layer_info.going_list)>2:
+            warnings.warn("layer {} has more that 2 output connections".format(str(self)))
+        for i in range(2):
+            if i<len(layer_info.coming_list):
+                coming[i] = layer_info.coming_list[i]
+        for i in range(2):
+            if i<len(layer_info.going_list):
+                going[i] = layer_info.going_list[i]
+
         row_values = {
+            # add column to the table
+            "coming": coming,
+            "going": going,
             "input_size": layer_info.input_size[1:] if len(layer_info.input_size)==4 else layer_info.input_size[1:]+(['']*(4-len(layer_info.input_size))), # multiple in?
             "output_size": layer_info.output_size[1:] if len(layer_info.output_size)==4 else layer_info.output_size[1:]+(['']*(4-len(layer_info.output_size))),
             "num_in": np.prod(layer_info.input_size[1:]) * self.bs * self.bpe,

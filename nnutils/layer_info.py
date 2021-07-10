@@ -21,6 +21,9 @@ class LayerInfo:
         self.inner_layers = {}  # type: Dict[str, List[int]]
         self.depth = depth
         self.depth_index = depth_index
+        # extra detail of the layer
+        self.extra_info = {}
+        self.extra_info['inplace']= module.inplace if hasattr(module, "inplace") else False
 
         # Statistics
         self.trainable = True
@@ -41,7 +44,11 @@ class LayerInfo:
         self.actiB = []
 
     def __repr__(self) -> str:
-        return "{}: {}-{}".format(self.class_name, self.depth, self.depth_index)
+        basic = "{}".format(self.class_name)
+        if self.extra_info.get('inplace', False):
+            basic += "(inplace)"
+        idx = "{}-{}".format(self.depth, self.depth_index)
+        return "{}: {}".format(basic, idx)
 
     def calculate_input_size(self, inputs: DETECTED_INPUT_TYPES, batch_dim: int) -> None:
         """ Set input_size using the model's inputs. """
@@ -77,6 +84,46 @@ class LayerInfo:
             raise TypeError(
                 "Model contains a layer with an unsupported input type: {}".format(inputs)
             )
+
+    def calculate_io_source(self, inputs: DETECTED_INPUT_TYPES,
+                            outputs: DETECTED_OUTPUT_TYPES) -> None:
+        """ Set input_size using the model's inputs. """
+
+        def get_source(inputs, i_list):
+            if isinstance(inputs, (list, tuple)):
+                for i in inputs:
+                    get_source(i, i_list)
+
+            elif isinstance(inputs, dict):
+                for _, i in inputs.items():
+                    get_source(i, i_list)
+
+            elif isinstance(inputs, torch.Tensor):
+                if hasattr(inputs, 'grad_fn'):
+                    if inputs.grad_fn not in i_list and inputs.grad_fn:
+                        i_list.append(inputs.grad_fn)
+                    else:
+                        i_list.append(inputs)
+            # elif inputs is None:
+            #     pass
+            # else:
+            #     raise TypeError(
+            #         "Model contains a layer with an unsupported input type: {}".format(inputs)
+            #     )
+
+        self.inputs_list = []
+        self.outputs_list = []
+        self.indirect_goto = []
+        self.coming_list = []
+        self.going_list = []
+        if not self.extra_info.get('inplace', False):
+            get_source(inputs, self.inputs_list)
+            get_source(outputs, self.outputs_list)
+        else:
+            assert isinstance(outputs, torch.Tensor)
+            self.inputs_list.append(outputs.grad_fn.next_functions[0][0])
+            self.outputs_list.append(outputs.grad_fn)
+
 
     def calculate_output_size(self, outputs: DETECTED_OUTPUT_TYPES, batch_dim: int) -> None:
         """ Set output_size using the model's outputs. """

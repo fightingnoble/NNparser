@@ -2,43 +2,50 @@
 
 from .model_statistics import *
 from torch.utils.hooks import RemovableHandle
-
+from hiddenlayer.graph import Graph, Node
+from graphviz import Digraph
+from .dotGen import draw
+from typing import Tuple
 # Some modules do the computation themselves using parameters
 # or the parameters of children. Treat these as layers.
 LAYER_MODULES = (torch.nn.MultiheadAttention,)
 INPUT_SIZE_TYPE = Sequence[Union[int, Sequence[Any], torch.Size]]
 
+
 def summary(
-    model: nn.Module,
-    input_data: Union[torch.Tensor, torch.Size, Sequence[torch.Tensor], INPUT_SIZE_TYPE],
-    *args: Any,
-    batch_dim: int = 0,
-    branching: int = 1, # 0: no branch,1:branch line,2: branch
-    col_names: Sequence[str] = (
-        "input_size",
-        "output_size",
-        "kernel_size",
-        "stride_size",
-        "pad_size",
-        "num_in",
-        "num_out",
-        "num_params",
-        "gemm",
-        "vect",
-        "acti",
-        # add backprop
-        "gemmB",
-        "vectB",
-        "actiB",),
-    col_width: int = 25,
-    depth: int = 3,
-    device: Optional[torch.device] = None,
-    dtypes: Optional[List[torch.dtype]] = None,
-    verbose: int = 1,
-    ucfg: {}, # user config: name, bs, bpe
-    # ? ucfg: Optional[Dict[str,(str,int)]] = {}, # user config: name, bs, bpe
-    **kwargs: Any
-) -> ModelStatistics:
+        model: nn.Module,
+        input_data: Union[torch.Tensor, torch.Size, Sequence[torch.Tensor], INPUT_SIZE_TYPE],
+        *args: Any,
+        batch_dim: int = 0,
+        branching: int = 1,  # 0: no branch,1:branch line,2: branch
+        col_names: Sequence[str] = (
+                # add column to the table
+                "coming",
+                "going",
+                "input_size",
+                "output_size",
+                "kernel_size",
+                "stride_size",
+                "pad_size",
+                "num_in",
+                "num_out",
+                "num_params",
+                "gemm",
+                "vect",
+                "acti",
+                # add backprop
+                "gemmB",
+                "vectB",
+                "actiB",),
+        col_width: int = 25,
+        depth: int = 3,
+        device: Optional[torch.device] = None,
+        dtypes: Optional[List[torch.dtype]] = None,
+        verbose: int = 1,
+        ucfg: {},  # user config: name, bs, bpe
+        # ? ucfg: Optional[Dict[str,(str,int)]] = {}, # user config: name, bs, bpe
+        **kwargs: Any
+) -> Tuple[ModelStatistics, Digraph, Graph, str]:
     """
     Summarize the given PyTorch model. Summarized information includes:
         # ? Layer names
@@ -86,33 +93,33 @@ def summary(
         input_size = get_correct_input_sizes(input_data.size())
         x = [input_data.to(device)]
     # ====================== input with args : ([x],[args])
-    elif isinstance(input_data,  tuple):
+    elif isinstance(input_data, tuple):
         # x list
         inputx = input_data[0]
-        x=[]
-        if not isinstance(inputx,list):
+        x = []
+        if not isinstance(inputx, list):
             input_size = get_correct_input_sizes(inputx.size())
             x = [inputx.to(device)]
-        else: # mutiple input in list
-            if all(isinstance(data, torch.Tensor) for data in inputx): #real input
-                # scanning all elements in the tuple
-                input_sizes = [data.size() for data in inputx]  # type: ignore
-                input_size = get_correct_input_sizes(input_sizes)
-                x = [data.to(device) for data in inputx]
-            else: # input shape: not used in this version
-                for item in inputx:
-                    if dtypes is None:
-                        dtypes = [torch.float] * len(item)
-                        input_size = get_correct_input_sizes(item)
-                        x.append( get_input_tensor(input_size, batch_dim, dtypes, device))
-
+        else:  # mutiple input in list
+            # if all(isinstance(data, torch.Tensor) for data in inputx):  # real input
+            #     # scanning all elements in the tuple
+            #     input_sizes = [data.size() for data in inputx]  # type: ignore
+            #     input_size = get_correct_input_sizes(input_sizes)
+            #     x = [data.to(device) for data in inputx]
+            # else:  # input shape: not used in this version
+            #     for item in inputx:
+            #         if dtypes is None:
+            #             dtypes = [torch.float] * len(item)
+            #             input_size = get_correct_input_sizes(item)
+            #             x.append(get_input_tensor(input_size, batch_dim, dtypes, device))
+            x = input_data_to(inputx, device)
         # args list
-        if len(input_data)>1:
+        if len(input_data) > 1:
             inputarg = input_data[1]
-            if isinstance(inputarg,(tuple,list)):
+            if isinstance(inputarg, (tuple, list)):
                 for arg in inputarg:
-                    if isinstance(arg,list):
-                        tmp=[data.to(device) for data in arg]
+                    if isinstance(arg, list):
+                        tmp = [data.to(device) for data in arg]
                         x.append(tmp)
                     else:
                         x.append(arg.to(device))
@@ -131,8 +138,9 @@ def summary(
     kwargs = {k: kwargs[k].to(device) if torch.is_tensor(kwargs[k]) else k for k in kwargs}
 
     try:
-        with torch.no_grad():
-            _ = model.to(device)(*x, *args, **kwargs)
+        # with torch.no_grad():
+        #     _ = model.to(device)(*x, *args, **kwargs)
+        y = model.to(device)(*x, *args, **kwargs)
     except Exception:
         print(
             "Failed to run torchsummary, printing sizes of executed layers: {}".format(summary_list)
@@ -142,38 +150,146 @@ def summary(
         for hook in hooks:
             hook.remove()
 
+    module_input_list = []
+    module_output_list = []
+    for info in summary_list:
+        module_input_list += [str(id(i)) for i in info.inputs_list]
+        module_output_list += [str(id(o)) for o in info.outputs_list]
+
+    # print('module_input_list:',module_input_list,'\n')
+    # print('module_output_list',module_output_list, '\n')
+
+    module_info_dict = {}
+    for current_info in summary_list:
+        for o in current_info.outputs_list:
+            if id(o) not in module_info_dict.keys():
+                module_info_dict[id(o)] = current_info
+            else:
+                orig_model = module_info_dict[id(o)].module
+                submodules = [m for m in orig_model.modules() if m is not orig_model]
+                if current_info.module in submodules and submodules:
+                        module_info_dict[id(o)] = current_info
+    # print(module_info_dict)
+
+    if ucfg['draw_graph']:
+        g, hl_g, outputname = draw(ucfg['nnname'], x, y, model, module_info_dict)
+    else:
+        g, hl_g, outputname = [None]*3
+
+    # info.outputs_list
+    no_module_path_mapping_oppose = {}
+    for current_info in summary_list:
+        for o in current_info.outputs_list:
+
+            # current_info.going_list = [str(layer_info) for layer_info in summary_list if o in layer_info.inputs_list]
+            # for layer_info in summary_list:
+            #     if o in layer_info.inputs_list:
+            #         current_info.going_list.append(str(layer_info))
+            # elif id(o) in no_module_path_mapping:
+            #     current_info.going_list.append(no_module_path_mapping[id(o)])
+            #     no_module_path_mapping_oppose[id(o)] = str(current_info)
+            def find_going(node):
+                outgoing_l = hl_g.outgoing(node)
+                if outgoing_l:
+                    for outgoing_t in outgoing_l:
+                        if outgoing_t.id in module_output_list:
+                            current_info.going_list.append(outgoing_t.name.split('\n')[0])
+                        else:
+                            find_going(outgoing_t)
+            find_going(hl_g[str(id(o))])
+
+            def find_coming(node):
+                income_l = hl_g.incoming(node)
+                if income_l:
+                    for income_t in income_l:
+                        if income_t.id in module_output_list:
+                            current_info.coming_list.append(income_t.name.split('\n')[0])
+                        else:
+                            find_coming(income_t)
+            find_coming(hl_g[str(id(o))])
+
+        # for i in current_info.inputs_list:
+        #
+        #     # current_info.coming_list = [str(layer_info) for layer_info in summary_list if i in layer_info.outputs_list]
+        #
+        #     def find_coming(i):
+        #         income_l = hl_g.incoming(i)
+        #         if income_l:
+        #             for income_t in income_l:
+        #                 if income_t.id in module_output_list:
+        #                     current_info.coming_list.append(income_t.name.split('\n')[0])
+        #                 else:
+        #                     find_coming(income_t)
+        #     find_coming(hl_g[str(id(i))])
+
+            # for layer_info in summary_list:
+            #     if i in layer_info.outputs_list:
+            #         current_info.coming_list.append(str(layer_info))
+                # elif id(i) in layer_info.going_list:
+                #     current_info.coming_list.append()
+
+
+
+    # 1,...,depth
+    for current_depth in range(1,depth+1):
+        current_depth_list = [info for info in summary_list if info.depth==current_depth]
+        for current_info in current_depth_list:
+            print("layer:", str(current_info),
+                  "inputs:", current_info.inputs_list,
+                  "outputs:", current_info.outputs_list,
+                  "come in:",current_info.coming_list,
+                  "go to:",current_info.going_list, '\n')
+
     formatting = FormattingOptions(branching, depth, verbose, col_names, col_width)
     formatting.set_layer_name_width(summary_list)
     results = ModelStatistics(summary_list, input_size, formatting, ucfg)
-    return results
+    return results, g, hl_g, outputname
 
+
+def input_data_to(
+        inputs: CORRECTED_INPUT_SIZE_TYPE,
+        device: torch.device,
+):
+    """ Get input_tensor with batch size 2 for use in model.forward() """
+    def f(inputs):
+        if isinstance(inputs, (list, tuple)):
+            return [f(i) for i in inputs]
+        elif isinstance(inputs, tuple):
+            return (f(i) for i in inputs)
+        elif isinstance(inputs, dict):
+            return {k: f(v) for k, v in inputs.items()}
+        elif isinstance(inputs, torch.Tensor):
+            return inputs.to(device)
+        else:
+            return inputs
+    return f(inputs)
 
 def get_input_tensor(
-    input_size: CORRECTED_INPUT_SIZE_TYPE,
-    batch_dim: int,
-    dtypes: List[torch.dtype],
-    device: torch.device,
+        input_size: CORRECTED_INPUT_SIZE_TYPE,
+        batch_dim: int,
+        dtypes: List[torch.dtype],
+        device: torch.device,
 ) -> List[torch.Tensor]:
     """ Get input_tensor with batch size 2 for use in model.forward() """
     x = []
     for size, dtype in zip(input_size, dtypes):
         # list for args, tuple for inputs in DLRM, 0619
-        if isinstance(size,list):
+        if isinstance(size, list):
             # for list of tensors:input in [(,)]
-            if isinstance(size[0],tuple):
-                tmp=[]
+            if isinstance(size[0], tuple):
+                tmp = []
                 for si in size[0]:
-                    if isinstance(si,tuple): # if a high-dim tensor, int/float random?
-                        input_tensor = torch.rand(*si)# to do: integer?
+                    if isinstance(si, tuple):  # if a high-dim tensor, int/float random?
+                        input_tensor = torch.rand(*si)  # to do: integer?
                     else:
-                        input_tensor = torch.randint(0,1,(1,si))
-                        input_tensor = input_tensor[0] # 1d tensor
+                        input_tensor = torch.randint(0, 1, (1, si))
+                        input_tensor = input_tensor[0]  # 1d tensor
                     result = input_tensor.to(device).type(torch.long)
                     tmp.append(result)
                 x.append(tmp)
                 continue
             else:
-                input_tensor = torch.randint(0,1,size) # for DLRM only
+                input_tensor = torch.randint(0, 1, size)  # for DLRM only
                 result = input_tensor.to(device).type(torch.long)
                 x.append(result)
                 continue
@@ -181,13 +297,13 @@ def get_input_tensor(
         if isinstance(size, (tuple)):
             # Case: input_tensor is a list of dimensions
             input_tensor = torch.rand(*size)
-            if size[0]==1:
-                input_tensor=input_tensor[0]
+            if size[0] == 1:
+                input_tensor = input_tensor[0]
             input_tensor = input_tensor.unsqueeze(dim=batch_dim)
             input_tensor = torch.cat([input_tensor] * 2, dim=batch_dim)
-        result = input_tensor.to(device).type(dtype)
-        if isinstance(result, torch.Tensor):
-            x.append(result)
+            result = input_tensor.to(device).type(dtype)
+            if isinstance(result, torch.Tensor):
+                x.append(result)
     return x
 
 
@@ -203,8 +319,8 @@ def get_correct_input_sizes(input_size: INPUT_SIZE_TYPE) -> CORRECTED_INPUT_SIZE
             else:
                 yield item
 
-    assert input_size
-    assert all(size > 0 for size in flatten(input_size)), "Negative size found in input_data."
+    # assert input_size is not None
+    # assert all(size > 0 for size in flatten(input_size)), "Negative size found in input_data."
 
     if isinstance(input_size, list) and isinstance(input_size[0], int):
         return [tuple(input_size)]
@@ -214,21 +330,23 @@ def get_correct_input_sizes(input_size: INPUT_SIZE_TYPE) -> CORRECTED_INPUT_SIZE
         return list(input_size)
     return [input_size]
 
+
 # batch size is 1 regardless of user input, it will only take effect when generating xlsx file
 def apply_hooks(
-    module: nn.Module,
-    orig_model: nn.Module,
-    depth: int,
-    summary_list: List[LayerInfo],
-    hooks: List[RemovableHandle],
-    idx: Dict[int, int],
-    batch_dim: int,
-    curr_depth: int = 0,
+        module: nn.Module,
+        orig_model: nn.Module,
+        depth: int,
+        summary_list: List[LayerInfo],
+        hooks: List[RemovableHandle],
+        idx: Dict[int, int],
+        batch_dim: int,
+        curr_depth: int = 0,
 ) -> None:
     '''
     If input_data is provided, recursively adds hooks to all layers of the model.
     Else, fills summary_list with layer info without computing a forward pass through the network.
     '''
+
     # Fallback is used if the layer's hook is never called, in Module Lists, for example.
     def hook(module: nn.Module, inputs: Any, outputs: Any) -> None:
         """ Create a LayerInfo object to aggregate information about that layer. """
@@ -236,12 +354,13 @@ def apply_hooks(
         # ! info here extract LayerInfo from that layer
         info = LayerInfo(module, curr_depth, idx[curr_depth])
         info.calculate_input_size(inputs, batch_dim)
+        info.calculate_io_source(inputs, outputs)
         del inputs
         info.calculate_output_size(outputs, batch_dim)
         info.calculate_num_params()
         # * pass the info to external summary_list (in summary func scope)
         info.check_recursive(summary_list)
-        summary_list.append(info) # contains info of is_recursive in that layer
+        summary_list.append(info)  # contains info of is_recursive in that layer
 
     submodules = [m for m in module.modules() if m is not orig_model]
 
@@ -254,5 +373,6 @@ def apply_hooks(
     if curr_depth <= depth:
         for child in module.children():
             apply_hooks(
-                child, orig_model, depth, summary_list, hooks, idx, batch_dim, curr_depth + 1
+                child, orig_model, depth, summary_list, hooks, idx, batch_dim,
+                curr_depth + 1,
             )

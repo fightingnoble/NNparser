@@ -42,7 +42,7 @@ args = parser.parse_args()
 
 
 # producing the table of the model paramter list
-(ms, depth, isconv,y) = pt.modelLst(vars(args))
+(ms, depth, isconv, dot, vgg16_hl) = pt.modelLst(vars(args))
 ms = pt.tableGen(ms,depth,isconv)
 
 # exporting the table at //output//torch//
@@ -51,4 +51,10 @@ if args.nnname == 'newmodel':
 else:
     nnname = args.nnname
 
-pt.tableExport(ms,nnname,y,args.backward)
+
+pt.tableExport(ms,nnname,args.backward)
+
+# dot, vgg16_hl.save(nnname+"_hl")
+# dot.format = "png"
+# dot.directory = "data"
+# dot.view()
